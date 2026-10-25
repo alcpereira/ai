@@ -11,6 +11,9 @@ import type {
   LanguageModelV4StreamPart,
   LanguageModelV4Usage,
   SharedV4Warning,
+  TranscriptionModelV4,
+  TranscriptionModelV4CallOptions,
+  TranscriptionModelV4Result,
 } from '@ai-sdk/provider'
 import {
   generateId,
@@ -20,7 +23,7 @@ import {
   type Tool as FullToolDefinition,
   type ToolExecutionOptions,
 } from '@ai-sdk/provider-utils'
-import { Platform } from 'react-native'
+import { type CodegenTypes, Platform } from 'react-native'
 
 import { AdkErrorCodes, createAdkError, toAdkError } from './errors'
 import {
@@ -31,6 +34,7 @@ import {
   type AdkModelType,
   type AdkNanoModelConfig,
   type AdkTool,
+  type AdkTranscriptionConfig,
   type AdkUsageMetadata,
   getNativeAdkEngine,
   type NanoDownloadProgressEvent,
@@ -113,6 +117,16 @@ export interface AdkLanguageModel extends LanguageModelV4 {
   countTokens: (text: string) => Promise<number>
 }
 
+export type AdkTranscriptionOptions = AdkTranscriptionConfig
+
+export interface AdkTranscriptionModel extends TranscriptionModelV4 {
+  /** Whether speech recognition for this locale and mode is downloaded or downloadable */
+  isAvailable: () => Promise<boolean>
+  getAvailability: () => Promise<AdkModelAvailability>
+  /** Downloads the speech recognition model, reporting download progress */
+  prepare: (options?: AdkPrepareOptions) => Promise<void>
+}
+
 export interface AdkProvider {
   (options?: AdkLanguageModelId | AdkLanguageModelOptions): AdkLanguageModel
   readonly specificationVersion: 'v4'
@@ -133,6 +147,10 @@ export interface AdkProvider {
   isNanoSupported: () => Promise<boolean>
   /** @deprecated Use `prepare()` on a Gemini Nano model */
   prepareNano: (options?: AdkPrepareOptions) => Promise<void>
+  /** On-device speech to text with ML Kit GenAI speech recognition */
+  transcriptionModel: (
+    options?: AdkTranscriptionOptions
+  ) => AdkTranscriptionModel
 }
 
 type ResolvedModelOptions = Omit<
@@ -182,18 +200,17 @@ const toModelAvailability = (value: string): AdkModelAvailability => {
 }
 
 const listenForDownloadProgress = (
+  subscribe: CodegenTypes.EventEmitter<NanoDownloadProgressEvent>,
   onProgress: AdkPrepareOptions['onProgress']
 ) =>
   onProgress
-    ? getNativeAdkEngine().onNanoDownloadProgress(
-        (event: NanoDownloadProgressEvent) => {
-          onProgress({
-            phase: event.phase as AdkDownloadProgress['phase'],
-            bytesDownloaded: event.bytesDownloaded,
-            bytesToDownload: event.bytesToDownload,
-          })
-        }
-      )
+    ? subscribe((event: NanoDownloadProgressEvent) => {
+        onProgress({
+          phase: event.phase as AdkDownloadProgress['phase'],
+          bytesDownloaded: event.bytesDownloaded,
+          bytesToDownload: event.bytesToDownload,
+        })
+      })
     : null
 
 async function getModelInfo(
@@ -269,6 +286,8 @@ export function createAdkProvider(
       model: DEFAULT_NANO_MODEL,
       modelType: 'genai-nano',
     }).prepare(options)
+  provider.transcriptionModel = (options?: AdkTranscriptionOptions) =>
+    new AdkSpeechTranscriptionModel(options)
   return provider
 }
 
@@ -513,7 +532,10 @@ class AdkChatLanguageModel implements AdkLanguageModel {
       return
     }
 
-    const listener = listenForDownloadProgress(options.onProgress)
+    const listener = listenForDownloadProgress(
+      getNativeAdkEngine().onNanoDownloadProgress,
+      options.onProgress
+    )
     try {
       await this.ensureNanoPrepared()
     } finally {
@@ -1128,6 +1150,97 @@ class AdkChatLanguageModel implements AdkLanguageModel {
         rawPrompt: options.prompt,
         rawSettings: {},
       },
+    }
+  }
+}
+
+class AdkSpeechTranscriptionModel implements AdkTranscriptionModel {
+  readonly specificationVersion = 'v4'
+  readonly provider = 'adk'
+  readonly modelId = 'genai-speech-recognition'
+
+  private readonly config: AdkTranscriptionConfig
+
+  constructor(options: AdkTranscriptionOptions = {}) {
+    this.config = options
+  }
+
+  async getAvailability(): Promise<AdkModelAvailability> {
+    if (Platform.OS !== 'android') {
+      return 'unavailable'
+    }
+    const availability = await getNativeAdkEngine()
+      .getTranscriptionAvailability(this.config)
+      .catch((error: unknown) => {
+        throw toAdkError(error)
+      })
+    return toModelAvailability(availability)
+  }
+
+  async isAvailable(): Promise<boolean> {
+    const availability = await this.getAvailability()
+    return availability === 'available' || availability === 'downloadable'
+  }
+
+  async prepare(options: AdkPrepareOptions = {}): Promise<void> {
+    const native = getNativeAdkEngine()
+    const listener = listenForDownloadProgress(
+      native.onTranscriptionDownloadProgress,
+      options.onProgress
+    )
+    try {
+      await native.prepareTranscription(this.config)
+    } catch (error) {
+      throw toAdkError(error)
+    } finally {
+      listener?.remove()
+    }
+  }
+
+  async doGenerate(
+    options: TranscriptionModelV4CallOptions
+  ): Promise<TranscriptionModelV4Result> {
+    const native = getNativeAdkEngine()
+    const requestId = generateId()
+    const abortSignal = options.abortSignal
+
+    if (abortSignal?.aborted) {
+      throw getAbortReason(abortSignal)
+    }
+
+    const onAbort = () => {
+      void native
+        .cancelStream(requestId)
+        .catch((error) => console.warn('[adk] cancel failed:', error))
+    }
+    abortSignal?.addEventListener('abort', onAbort, { once: true })
+
+    const audio =
+      typeof options.audio === 'string'
+        ? options.audio.replace(/^data:[^;]+;base64,/, '')
+        : uint8ArrayToBase64(options.audio)
+
+    try {
+      const result = await native.transcribe(requestId, audio, this.config)
+      return {
+        text: result.text,
+        // ML Kit speech recognition does not report timestamps
+        segments: [],
+        language: this.config.language,
+        durationInSeconds: result.durationInSeconds,
+        warnings: [],
+        response: {
+          timestamp: new Date(),
+          modelId: this.modelId,
+        },
+      }
+    } catch (error) {
+      if (abortSignal?.aborted) {
+        throw getAbortReason(abortSignal)
+      }
+      throw toAdkError(error)
+    } finally {
+      abortSignal?.removeEventListener('abort', onAbort)
     }
   }
 }

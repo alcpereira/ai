@@ -9,6 +9,8 @@ export type {
   AdkProvider,
   AdkProviderOptions,
   AdkToolDefinitionSet,
+  AdkTranscriptionModel,
+  AdkTranscriptionOptions,
 } from './ai-sdk'
 export { adk, createAdkProvider } from './ai-sdk'
 export type { AdkError, AdkErrorCode } from './errors'
