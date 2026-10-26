@@ -163,9 +163,17 @@ switch (info.availability) {
 const info = await adk.getModelInfo({ model: 'gemini-3.8-flash' })
 ```
 
-For a yes/no answer, `adk.isAvailable()` resolves to `true` when the provider's model is `available` or `downloadable`, like `apple.isAvailable()`.
+For a quick yes/no answer, `adk.isAvailable()` and `model.isAvailable()` return a boolean synchronously, like `apple.isAvailable()`, so UI code can call them directly:
 
-These are cheap native calls that do not download the model. You can cache them at app startup and check again when the app resumes.
+```typescript
+if (adk.isAvailable()) {
+  // Show Gemini Nano in the model picker
+}
+```
+
+The synchronous check can only use what the device knows without async work. For Gemini Nano, it reflects the last status `getModelInfo()` or `prepare()` saw, or else whether AICore is installed. Call `getModelInfo()` for the exact state, such as whether Gemini Nano still needs a download.
+
+Neither call downloads the model. You can call `getModelInfo()` at app startup and again when the app resumes.
 
 ### Preparation
 
