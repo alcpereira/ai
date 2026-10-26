@@ -44,7 +44,7 @@ export const createAdkLanguageSetupAdapter = (
       if (options.model !== 'gemini-nano' && !options.apiKey) {
         return 'no'
       }
-      return 'yes'
+      return model.isAvailable() ? 'yes' : 'no'
     },
     async download(onProgress) {
       let bytesToDownload: number | undefined

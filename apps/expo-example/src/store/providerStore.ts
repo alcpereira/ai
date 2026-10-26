@@ -36,12 +36,10 @@ const availabilityAtom = atomWithRefresh(async (get) => {
   let nanoUnavailableReason: NanoUnavailableReason | null = null
 
   for (const adapter of adapters) {
-    if (adapter.modelId === 'adk-gemini-nano') {
-      continue
-    }
     availability.set(adapter.modelId, adapter.isAvailable())
   }
 
+  // isAvailable() is a quick check, so ask Gemini Nano whether it needs a download
   const nano = await adk.getModelInfo()
   switch (nano.availability) {
     case 'available':
