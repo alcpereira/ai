@@ -106,6 +106,8 @@ export interface AdkPrepareOptions {
 }
 
 export interface AdkLanguageModel extends LanguageModelV4 {
+  /** Quick synchronous check, see `AdkProvider.isAvailable` */
+  isAvailable: () => boolean
   /** Downloads and initializes Gemini Nano, reporting progress. No-op for cloud models */
   prepare: (options?: AdkPrepareOptions) => Promise<void>
   updateTools: (tools: AdkToolDefinitionSet) => void
@@ -120,10 +122,12 @@ export interface AdkProvider {
     options?: AdkLanguageModelId | AdkLanguageModelOptions
   ) => AdkLanguageModel
   /**
-   * Whether the provider's model, or the default model of `modelType`, can be
-   * used now: its availability is `available` or `downloadable`
+   * Quick synchronous check whether the provider's model, or the default model
+   * of `modelType`, can be used. For Gemini Nano it reflects the last status
+   * `getModelInfo()` or `prepare()` saw, or else whether AICore is installed.
+   * Use `getModelInfo()` for the exact availability
    */
-  isAvailable: (modelType?: AdkModelType) => Promise<boolean>
+  isAvailable: (modelType?: AdkModelType) => boolean
   /** Availability details for the provider's model, or for `model` */
   getModelInfo: (options?: {
     model?: AdkLanguageModelId
@@ -196,6 +200,16 @@ const listenForDownloadProgress = (
       )
     : null
 
+function isAvailable(
+  modelType: AdkModelType,
+  nano: AdkNanoModelConfig | undefined
+) {
+  return (
+    Platform.OS === 'android' &&
+    getNativeAdkEngine().isAvailable(modelType, nano)
+  )
+}
+
 async function getModelInfo(
   { model, modelType }: ResolvedModelOptions,
   nano: AdkNanoModelConfig | undefined
@@ -241,13 +255,11 @@ export function createAdkProvider(
   }
   provider.specificationVersion = 'v4' as const
   provider.languageModel = createLanguageModel
-  provider.isAvailable = async (modelType?: AdkModelType) => {
-    const resolved = modelType
-      ? resolveModelOptions({}, { modelType })
-      : resolveModelOptions(defaults)
-    const { availability } = await getModelInfo(resolved, defaults.nano)
-    return availability === 'available' || availability === 'downloadable'
-  }
+  provider.isAvailable = (modelType?: AdkModelType) =>
+    isAvailable(
+      modelType ?? resolveModelOptions(defaults).modelType,
+      defaults.nano
+    )
   provider.getModelInfo = (
     options: { model?: AdkLanguageModelId; nano?: AdkNanoModelConfig } = {}
   ) =>
@@ -502,6 +514,10 @@ class AdkChatLanguageModel implements AdkLanguageModel {
 
   private get isNano() {
     return this.agentConfig.model.type === 'genai-nano'
+  }
+
+  isAvailable(): boolean {
+    return isAvailable(this.agentConfig.model.type, this.agentConfig.model.nano)
   }
 
   updateTools(tools: AdkToolDefinitionSet) {

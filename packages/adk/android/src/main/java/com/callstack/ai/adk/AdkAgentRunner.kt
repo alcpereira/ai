@@ -1,6 +1,7 @@
 package com.callstack.ai.adk
 
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.util.Base64
 import com.facebook.react.bridge.ReadableArray
@@ -40,6 +41,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+
+private const val AICORE_PACKAGE = "com.google.android.aicore"
 
 data class AdkToolCallRecord(val toolCallId: String, val toolName: String, val input: String)
 
@@ -96,6 +99,25 @@ class AdkAgentRunner(
 ) {
   private val nanoModels = ConcurrentHashMap<NanoConfig, GenerativeModel>()
   private val nanoPrepareMutex = Mutex()
+  // The last Gemini Nano status seen per model selection, for the synchronous check
+  private val nanoStatuses = ConcurrentHashMap<NanoConfig, Int>()
+
+  /**
+   * Whether Gemini Nano is available or downloadable, answered without async work: from the last
+   * status this process saw, or else from whether AICore is installed.
+   */
+  fun isNanoAvailable(config: NanoConfig): Boolean {
+    if (nanoModels.containsKey(config)) return true
+    nanoStatuses[config]?.let {
+      return it == FeatureStatus.AVAILABLE || it == FeatureStatus.DOWNLOADABLE
+    }
+    return try {
+      context.packageManager.getPackageInfo(AICORE_PACKAGE, 0)
+      true
+    } catch (_: PackageManager.NameNotFoundException) {
+      false
+    }
+  }
 
   private fun nanoClient(config: NanoConfig): GenerativeModel {
     if (config.releaseStage == null && config.preference == null) {
@@ -123,7 +145,9 @@ class AdkAgentRunner(
       if (nanoModels.containsKey(config)) return
 
       val model = nanoClient(config)
-      when (val status = model.checkStatus()) {
+      val status = model.checkStatus()
+      nanoStatuses[config] = status
+      when (status) {
         FeatureStatus.UNAVAILABLE ->
           throw AdkErrors.AdkException(
             AdkErrors.MODEL_UNAVAILABLE,
@@ -183,6 +207,7 @@ class AdkAgentRunner(
       } catch (_: Exception) {
         return AdkModelInfo(availability = "unknown")
       }
+    nanoStatuses[config] = status
 
     return when (status) {
       FeatureStatus.UNAVAILABLE -> AdkModelInfo(availability = "unavailable")

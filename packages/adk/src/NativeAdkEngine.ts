@@ -146,6 +146,8 @@ export interface NanoDownloadProgressEvent {
 }
 
 export interface Spec extends TurboModule {
+  /** Quick synchronous check, see `AdkProvider.isAvailable` */
+  isAvailable(modelType: AdkModelType, nano?: AdkNanoModelConfig): boolean
   getModelInfo(
     modelType: AdkModelType,
     nano?: AdkNanoModelConfig
