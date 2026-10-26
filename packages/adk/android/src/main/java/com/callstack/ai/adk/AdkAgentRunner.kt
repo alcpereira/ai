@@ -107,10 +107,11 @@ class AdkAgentRunner(
    * status this process saw, or else from whether AICore is installed.
    */
   fun isNanoAvailable(config: NanoConfig): Boolean {
-    if (nanoModels.containsKey(config)) return true
+    // The latest status wins over a model prepared earlier, which may have gone away since
     nanoStatuses[config]?.let {
       return it == FeatureStatus.AVAILABLE || it == FeatureStatus.DOWNLOADABLE
     }
+    if (nanoModels.containsKey(config)) return true
     return try {
       context.packageManager.getPackageInfo(AICORE_PACKAGE, 0)
       true
@@ -157,6 +158,7 @@ class AdkAgentRunner(
       }
       model.warmup()
       nanoModels[config] = model
+      nanoStatuses[config] = FeatureStatus.AVAILABLE
     }
   }
 
